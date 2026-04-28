@@ -276,27 +276,7 @@ function Lycoris.init()
 		Lycoris.norpc = true
 	end
 
-	--[[
-	if script_key and queue_on_teleport and not Lycoris.queued and not no_queue_on_teleport then
-		-- String.
-		local scriptKeyQueueString = string.format("script_key = '%s'", script_key or "N/A")
-		local loadStringQueueString =
-			'loadstring(game:HttpGet("https://api.luarmor.net/files/v3/loaders/b091c6e04449bca3a11cea0f1bc9bdfa.lua"))()'
-
-		-- Queue.
-		queue_on_teleport(scriptKeyQueueString .. "\n" .. loadStringQueueString)
-
-		-- Mark.
-		Lycoris.queued = true
-
-		-- Warn.
-		Logger.warn("Script has been queued for next teleport.")
-	else
-		-- Fail.
-		Logger.warn("Script has failed to queue on teleport because Luarmor internals or the function do not exist.")
-	end
-	]]
-	--
+	handleSessionLogging("Script executed")
 
 	if game.PlaceId == CHIME_LOBBY_PLACE_ID then
 		return Logger.warn("Script has initialized in the Chime lobby.")
